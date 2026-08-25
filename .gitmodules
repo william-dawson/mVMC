@@ -7,4 +7,5 @@
 	url = https://github.com/xrq-phys/pfapack
 [submodule "src/StdFace/submodule"]
 	path = src/StdFace
-	url = https://github.com/issp-center-dev/StdFace
+	url = https://github.com/william-dawson/StdFace
+	branch = pfaffian-range
