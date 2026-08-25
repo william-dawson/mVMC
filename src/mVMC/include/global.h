@@ -72,6 +72,12 @@ int NSROptFixSmp; /* the number of SR method steps with fixed samples (1 is reco
 double DSROptRedCut; /* SR stabilizing factor for truncation of redundant directions */
 double DSROptStaDel; /* SR stabiliaing factor for diagonal element modification */
 double DSROptStepDt; /* step width of the SR method */
+/* Slater amplitude that SyncModifiedParameter renormalizes to. |Pf| scales as
+   DAmpMax^(Nsize/2), so a fixed value makes it grow exponentially in Nsize;
+   past Nsize~450 the default 4.0 overflows double and makeInitialSample fails
+   with "Too many loops" on every draw. The overall amplitude is a gauge --
+   VMC uses only Pfaffian ratios -- so it can be chosen per system size. */
+double DAmpMax;
 
 int NSROptCGMaxIter; /* the number of maximum iterations in SR-CG method */
 double DSROptCGTol; /* the tolerance for SR-CG method */

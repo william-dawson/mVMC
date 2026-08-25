@@ -29,7 +29,6 @@ along with this program. If not, see http://www.gnu.org/licenses/.
 #ifndef _SRC_PARAMETER
 #define _SRC_PARAMETER
 
-#define D_AmpMax             4.0
 
 /* initialize variational parameters */
 void InitParameter() {
@@ -156,7 +155,7 @@ void SyncModifiedParameter(MPI_Comm comm) {
   for(i=1;i<NSlater;i++){
     if(xmax < cabs(Slater[i])) xmax = cabs(Slater[i]);
   }
-  ratio = D_AmpMax/xmax;
+  ratio = DAmpMax/xmax;
   #pragma omp parallel for default(shared) private(i)
   for(i=0;i<NSlater;i++) Slater[i] *= ratio;
 

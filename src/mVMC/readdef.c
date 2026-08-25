@@ -859,6 +859,7 @@ int ReadDefFileNInt(char *xNameListFile, MPI_Comm comm) {
   DSROptStaDel = bufDouble[IdxSROptStaDel];
   DSROptStepDt = bufDouble[IdxSROptStepDt];
   DSROptCGTol = bufDouble[IdxSROptCGTol];
+  DAmpMax = bufDouble[IdxAmpMax];
   TwoSz = bufInt[Idx2Sz];
   
   Nx = bufInt[IdxNx];
@@ -2127,6 +2128,7 @@ void SetDefaultValuesModPara(int *bufInt, double *bufDouble) {
   bufDouble[IdxSROptStaDel] = 0.02;
   bufDouble[IdxSROptStepDt] = 0.02;
   bufDouble[IdxSROptCGTol] = 1.0e-10;
+  bufDouble[IdxAmpMax] = 4.0;  /* upstream default; see global.h */
   NStoreO = 1;
   NSRCG = 0;
   NSRCGFallback = 0;
@@ -2237,6 +2239,8 @@ int GetInfoFromModPara(int *bufInt, double *bufDouble) {
               bufInt[IdxSROptCGMaxIter] = (int) dtmp;
             } else if (CheckWords(ctmp, "DSROptCGTol") == 0) {
               bufDouble[IdxSROptCGTol] = (double) dtmp;
+            } else if (CheckWords(ctmp, "DAmpMax") == 0) {
+              bufDouble[IdxAmpMax] = (double) dtmp;
             } else if (CheckWords(ctmp, "NVMCWarmUp") == 0) {
               bufInt[IdxVMCWarmUp] = (int) dtmp;
             } else if (CheckWords(ctmp, "NVMCInterval") == 0) {
