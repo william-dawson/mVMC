@@ -16,6 +16,15 @@ set(SOURCES_sfmt
         ../sfmt/SFMT.c   
  )
 
+# UHF is serial and contains no OpenMP region of its own, so unlike vmc.out
+# it can safely link a threaded LAPACK -- there is nothing to nest against.
+set(UHF_LAPACK_LIBRARIES "${LAPACK_LIBRARIES}" CACHE STRING
+    "LAPACK for the serial UHF tool; may be threaded (e.g. -SSL2BLAMP)")
+option(UHF_USE_ZHEEVD "Use divide-and-conquer zheevd in UHF's diagonalization" OFF)
+
 add_executable(UHF ${SOURCES_UHF} ${SOURCES_sfmt})
-target_link_libraries(UHF ${LAPACK_LIBRARIES} m)
+target_link_libraries(UHF ${UHF_LAPACK_LIBRARIES} m)
+if(UHF_USE_ZHEEVD)
+  target_compile_definitions(UHF PRIVATE UHF_USE_ZHEEVD)
+endif()
 install(TARGETS UHF RUNTIME DESTINATION bin)

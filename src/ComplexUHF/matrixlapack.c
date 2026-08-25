@@ -38,6 +38,9 @@ int dgemm_(char *jobz, char *uplo, int *m,int *n,int *k,double *alpha,  double *
 int dsyev_(char *jobz, char *uplo, int *n, double *a, int *lda, double *w, double *work, int *lwork, int *info);
 int zgemm_(char *jobz, char *uplo, int *m,int *n,int *k,double complex *alpha,  double complex *a, int *lda, double complex *b, int *ldb, double complex *beta,double complex *c,int *ldc);
 int zheev_(char *jobz, char *uplo, int *n, double complex *a, int *lda, double *w, double complex *work, int *lwork, double *rwork, int *info);
+#ifdef UHF_USE_ZHEEVD
+int zheevd_(char *jobz, char *uplo, int *n, double complex *a, int *lda, double *w, double complex *work, int *lwork, double *rwork, int *lrwork, int *iwork, int *liwork, int *info);
+#endif
 
 
 void cmp_to_f(int N, int M, double complex**A, double complex *a){
@@ -237,6 +240,10 @@ int ZHEEVall(int xNsize, double complex **A, double *r,double complex **vec){
 	int i,j,k;
 	char jobz, uplo;
 	int n, lda, lwork, info;
+#ifdef UHF_USE_ZHEEVD
+	int lrwork, liwork;
+	int *iwork;
+#endif
   double *rwork;
 	double *w;
 	double complex *a, *work;
@@ -249,6 +256,31 @@ int ZHEEVall(int xNsize, double complex **A, double *r,double complex **vec){
 	w = (double*)malloc(xNsize*sizeof(double));
 	rwork = (double*)malloc((3*xNsize>1?3*xNsize:1)*sizeof(double));
 
+#ifdef UHF_USE_ZHEEVD
+	/* Divide-and-conquer. Same eigenvalues to working precision; in a
+	   degenerate subspace the eigenvector basis may differ from zheev's. */
+	{
+		double complex workQuery;
+		double rworkQuery;
+		int iworkQuery;
+		lwork = lrwork = liwork = -1;
+		zheevd_(&jobz, &uplo, &n, a, &lda, w, &workQuery, &lwork,
+		        &rworkQuery, &lrwork, &iworkQuery, &liwork, &info);
+		if(info == 0){
+			lwork  = (int)creal(workQuery);
+			lrwork = (int)rworkQuery;
+			liwork = iworkQuery;
+		} else {
+			lwork  = 2*xNsize + xNsize*xNsize;
+			lrwork = 1 + 5*xNsize + 2*xNsize*xNsize;
+			liwork = 3 + 5*xNsize;
+		}
+	}
+	free(rwork);
+	rwork = (double*)malloc(lrwork*sizeof(double));
+	iwork = (int*)malloc(liwork*sizeof(int));
+	work  = (double complex*)malloc(lwork*sizeof(double complex));
+#else
 	/* Ask LAPACK for the blocked workspace instead of assuming 4n: the
 	   fixed guess only meets the unblocked minimum, so the reduction to
 	   tridiagonal form ran without blocking on large matrices. */
@@ -260,6 +292,7 @@ int ZHEEVall(int xNsize, double complex **A, double *r,double complex **vec){
 		if(lwork < 2*xNsize-1) lwork = 2*xNsize-1;
 	}
 	work = (double complex*)malloc(lwork*sizeof(double complex));
+#endif
 
 	k=0;
 	for(j=0;j<xNsize;j++){
@@ -269,13 +302,21 @@ int ZHEEVall(int xNsize, double complex **A, double *r,double complex **vec){
 		}
 	}
 
+#ifdef UHF_USE_ZHEEVD
+	zheevd_(&jobz, &uplo, &n, a, &lda, w, work, &lwork,
+	        rwork, &lrwork, iwork, &liwork, &info);
+#else
 	zheev_(&jobz, &uplo, &n, a, &lda, w, work, &lwork, rwork, &info);
+#endif
 
 	if(info != 0){
 		free(a);
 		free(w);
 		free(work);
 		free(rwork);
+#ifdef UHF_USE_ZHEEVD
+		free(iwork);
+#endif
 		return 0;
 	}
 
@@ -296,6 +337,9 @@ int ZHEEVall(int xNsize, double complex **A, double *r,double complex **vec){
 	free(w);
 	free(work);
 	free(rwork);
+#ifdef UHF_USE_ZHEEVD
+	free(iwork);
+#endif
 
 	return 1;
 }
