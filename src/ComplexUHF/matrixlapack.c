@@ -242,12 +242,24 @@ int ZHEEVall(int xNsize, double complex **A, double *r,double complex **vec){
 	double complex *a, *work;
 
 	n = lda = xNsize;
-	lwork = 4*xNsize; /* 3*xNsize OK?*/
+	jobz = 'V';
+	uplo = 'U';
 
 	a = (double complex*)malloc(xNsize*xNsize*sizeof(double complex));
 	w = (double*)malloc(xNsize*sizeof(double));
+	rwork = (double*)malloc((3*xNsize>1?3*xNsize:1)*sizeof(double));
+
+	/* Ask LAPACK for the blocked workspace instead of assuming 4n: the
+	   fixed guess only meets the unblocked minimum, so the reduction to
+	   tridiagonal form ran without blocking on large matrices. */
+	{
+		double complex workQuery;
+		lwork = -1;
+		zheev_(&jobz, &uplo, &n, a, &lda, w, &workQuery, &lwork, rwork, &info);
+		lwork = (info == 0) ? (int)creal(workQuery) : 0;
+		if(lwork < 2*xNsize-1) lwork = 2*xNsize-1;
+	}
 	work = (double complex*)malloc(lwork*sizeof(double complex));
-	rwork = (double*)malloc(lwork*sizeof(double));
 
 	k=0;
 	for(j=0;j<xNsize;j++){
@@ -256,9 +268,6 @@ int ZHEEVall(int xNsize, double complex **A, double *r,double complex **vec){
 			k++;
 		}
 	}
-
-	jobz = 'V';
-	uplo = 'U';
 
 	zheev_(&jobz, &uplo, &n, a, &lda, w, work, &lwork, rwork, &info);
 
