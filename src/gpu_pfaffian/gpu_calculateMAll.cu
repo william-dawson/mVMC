@@ -202,3 +202,183 @@ extern "C" int CalculateMAll_real_gpu(const int *eleIdx, int qpStart, int qpEnd)
 
   return ret;
 }
+
+/* --- B1: multi-sample batched dispatch -------------------------------
+ *
+ * A3 above batches Q projections of ONE sample. B1's call site
+ * (vmccal.c's VMCMainCal) instead calls CalculateMAll_real once per
+ * sample, Q-wide, for every one of the S stored samples -- S*Q
+ * independent factorizations, described since the very first version of
+ * this port ("B1 batch=2000") but never actually exposed as one GPU
+ * batch until now: the loop in vmccal.c calls CalculateMAll_real and
+ * immediately consumes its result before moving to the next sample (see
+ * HANDOFF.md's B1 finding). This section batches every sample's Q
+ * projections into one GPU call; vmccal.c's loop then repoints
+ * InvM_real/PfM_real at each sample's slice of the result instead of
+ * computing it fresh. */
+
+/* Gather for B1: batch index b = sampleIdx*q + qpidx. Each sample has
+ * its OWN eleIdx (electron configuration); all samples share the SAME Q
+ * SlaterElm_real slabs (SlaterElm_real is recomputed once per SR step,
+ * not per sample -- see vmcmain.c's own comment to that effect). This
+ * mirrors vmccal.c's VMCMainCal loop exactly: `eleIdx = EleIdx +
+ * sample*Nsize; CalculateMAll_real(eleIdx, 0, NQPFull)`, batched across
+ * every sample in the chunk instead of one sample at a time. */
+__global__ void k_gather_slater_real_multisample(int n, int ne, int nsite, int nsite2,
+                                                   int q, int nsamples,
+                                                   const double *slaterElm,
+                                                   const int *eleIdxBase, int sampleStride,
+                                                   double *a) {
+  long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+  long total = (long)nsamples * q * n * n;
+  if (idx >= total) return;
+  long b = idx / ((long)n * n);
+  long rem = idx % ((long)n * n);
+  int msi = (int)(rem / n);
+  int msj = (int)(rem % n);
+  int sampleIdx = (int)(b / q);
+  int qpidx = (int)(b % q);
+  const int *eleIdx = eleIdxBase + (long)sampleIdx * sampleStride;
+  int rsi = eleIdx[msi] + (msi / ne) * nsite;
+  int rsj = eleIdx[msj] + (msj / ne) * nsite;
+  const double *sltE = slaterElm + (long)qpidx * nsite2 * nsite2;
+  a[b * (long)n * n + (long)msi * n + msj] = -sltE[(long)rsi * nsite2 + rsj];
+}
+
+/* Separate cache from A3's: B1's batch (nsamples*q) is a different size
+ * class from A3's (q alone) -- sharing one cache would thrash on every
+ * call as each site evicts the other's buffers. */
+static int g_b1_buf_n = -1, g_b1_buf_nb = -1, g_b1_buf_batch = -1;
+static int *g_b1_ipiv = NULL, *g_b1_info = NULL;
+static double *g_b1_w = NULL, *g_b1_scratch = NULL;
+static double *g_b1_m = NULL, *g_b1_uinv = NULL, *g_b1_vt = NULL, *g_b1_out = NULL;
+/* Unified Memory (unlike the scratch buffers above): VMCMainCal's
+ * per-sample consumption phase reads these directly as ordinary host
+ * pointers (repointing InvM_real/PfM_real at a slice of them), so they
+ * must be host-readable, not plain device memory. */
+static double *g_b1_invM = NULL, *g_b1_pfM = NULL;
+static int *g_b1_info_per_sample = NULL;
+static int g_b1_nsamples_alloc = -1;
+
+static void gpu_pfaffian_b1_free_buffers() {
+  if (g_b1_ipiv) cudaFree(g_b1_ipiv);
+  if (g_b1_info) cudaFree(g_b1_info);
+  if (g_b1_w) cudaFree(g_b1_w);
+  if (g_b1_scratch) cudaFree(g_b1_scratch);
+  if (g_b1_m) cudaFree(g_b1_m);
+  if (g_b1_uinv) cudaFree(g_b1_uinv);
+  if (g_b1_vt) cudaFree(g_b1_vt);
+  if (g_b1_out) cudaFree(g_b1_out);
+  if (g_b1_invM) cudaFree(g_b1_invM);
+  if (g_b1_pfM) cudaFree(g_b1_pfM);
+  if (g_b1_info_per_sample) cudaFree(g_b1_info_per_sample);
+  g_b1_ipiv = g_b1_info = NULL;
+  g_b1_w = g_b1_scratch = g_b1_m = g_b1_uinv = g_b1_vt = g_b1_out = NULL;
+  g_b1_invM = g_b1_pfM = NULL;
+  g_b1_info_per_sample = NULL;
+}
+
+static void gpu_pfaffian_b1_ensure_buffers(int n, int nb, int batch, int nsamples) {
+  if (n == g_b1_buf_n && nb == g_b1_buf_nb && batch == g_b1_buf_batch && nsamples == g_b1_nsamples_alloc) return;
+  gpu_pfaffian_b1_free_buffers();
+  check_cuda(cudaMalloc(&g_b1_ipiv, sizeof(int) * (size_t)n * batch), "cudaMalloc b1 ipiv");
+  check_cuda(cudaMalloc(&g_b1_info, sizeof(int) * (size_t)batch), "cudaMalloc b1 info");
+  check_cuda(cudaMalloc(&g_b1_w, sizeof(double) * (size_t)n * (2 * nb) * batch), "cudaMalloc b1 w");
+  check_cuda(cudaMalloc(&g_b1_scratch, sizeof(double) * (size_t)(n - nb) * (n - nb) * batch), "cudaMalloc b1 scratch");
+  check_cuda(cudaMalloc(&g_b1_m, sizeof(double) * (size_t)n * n * batch), "cudaMalloc b1 m");
+  check_cuda(cudaMalloc(&g_b1_uinv, sizeof(double) * (size_t)(n - 1) * (n - 1) * batch), "cudaMalloc b1 uinv");
+  check_cuda(cudaMalloc(&g_b1_vt, sizeof(double) * (size_t)n * batch), "cudaMalloc b1 vt");
+  check_cuda(cudaMalloc(&g_b1_out, sizeof(double) * (size_t)n * n * batch), "cudaMalloc b1 out");
+  check_cuda(cudaMallocManaged(&g_b1_invM, sizeof(double) * (size_t)n * n * batch), "cudaMallocManaged b1 invM");
+  check_cuda(cudaMallocManaged(&g_b1_pfM, sizeof(double) * (size_t)batch), "cudaMallocManaged b1 pfM");
+  check_cuda(cudaMallocManaged(&g_b1_info_per_sample, sizeof(int) * (size_t)nsamples), "cudaMallocManaged b1 info_per_sample");
+  g_b1_buf_n = n;
+  g_b1_buf_nb = nb;
+  g_b1_buf_batch = batch;
+  g_b1_nsamples_alloc = nsamples;
+}
+
+/* B1's batched GPU dispatch: factorizes every (sample, qpidx) pair in
+ * [0, nsamples) x [0, q) in one GPU batch of nsamples*q matrices --
+ * exactly the "S*Q independent factorizations" B1 has always described,
+ * finally exposed instead of run one sample (Q-wide) at a time.
+ *
+ * eleIdxBase/sampleStride let the caller pass a sub-range of mVMC's own
+ * EleIdx array directly (EleIdx + sampleStart*Nsize, Nsize) -- no gather
+ * or copy of the input side needed, since EleIdx is already contiguous
+ * across all samples (see HANDOFF.md).
+ *
+ * Does NOT chunk by memory -- nsamples*q matrices of n*n doubles (times
+ * several buffers) must fit at once. Correct for the sizes validated so
+ * far; HANDOFF.md's memory-ceiling section already establishes the real
+ * chunk size needed at production S/W, not yet wired in here.
+ *
+ * On return, *invM_batch_out / *pfM_batch_out point at cached Unified
+ * Memory holding every result (layout: batch index b = sampleIdx*q +
+ * qpidx, the same convention CalculateMAll_real's own qpidx loop uses;
+ * matrices and Pfaffians are two SEPARATE uniform-stride arrays, not
+ * contiguous with each other the way the global InvM_real/PfM_real are
+ * -- callers must not assume "PfM_real = InvM_real + Q*Nsize*Nsize"
+ * still holds for these batch buffers). *info_per_sample_out points at
+ * an nsamples-length array, one aggregated status per sample (0 = ok,
+ * matching CalculateMAll_real's return convention) -- the caller can
+ * keep looping samples exactly as before and check info per sample
+ * unchanged. Return value is the first nonzero per-sample status found
+ * (0 if every sample succeeded), for convenience/logging only -- the
+ * per-sample array is what callers should actually branch on. */
+extern "C" int CalculateMAll_real_gpu_batch(const int *eleIdxBase, int sampleStride,
+                                             int nsamples, int q,
+                                             double **invM_batch_out, double **pfM_batch_out,
+                                             int **info_per_sample_out) {
+  const int n = Nsize;
+  const int ne = Ne;
+  const int nsite = Nsite;
+  const int nsite2 = Nsite2;
+  const int batch = nsamples * q;
+  int nb = (n / 2 < 32) ? (n / 2) : 32;
+  if (nb < 1) nb = 1;
+
+  cublasHandle_t handle = gpu_pfaffian_handle();
+
+  gpu_pfaffian_b1_ensure_buffers(n, nb, batch, nsamples);
+  int *ipiv = g_b1_ipiv, *info = g_b1_info;
+  double *w = g_b1_w, *scratch = g_b1_scratch, *m = g_b1_m, *uinv = g_b1_uinv, *vt = g_b1_vt, *out = g_b1_out;
+  double *invM = g_b1_invM;
+  double *pfM = g_b1_pfM;
+
+  const int threads = 256;
+  long total = (long)batch * n * n;
+  int blocks = (int)((total + threads - 1) / threads);
+  k_gather_slater_real_multisample<<<blocks, threads>>>(n, ne, nsite, nsite2, q, nsamples,
+                                                          SlaterElm_real, eleIdxBase, sampleStride, invM);
+  check_cuda(cudaGetLastError(), "k_gather_slater_real_multisample launch");
+
+  check_cublas(dsktrf_cuda_upper_n(handle, n, nb, batch, invM, ipiv, info, w, scratch), "dsktrf_cuda_upper_n (B1)");
+  check_cublas(utu2pfa_cuda(n, batch, invM, ipiv, pfM), "utu2pfa_cuda (B1)");
+  check_cublas(utu2inv_cuda_upper(handle, n, batch, invM, ipiv, m, uinv, vt, out), "utu2inv_cuda_upper (B1)");
+
+  blocks = (int)((total + threads - 1) / threads);
+  k_negate<<<blocks, threads>>>(total, invM);
+  check_cuda(cudaGetLastError(), "k_negate launch (B1)");
+  check_cuda(cudaDeviceSynchronize(), "sync (B1)");
+
+  int *h_info = (int *)malloc(sizeof(int) * (size_t)batch);
+  check_cuda(cudaMemcpy(h_info, info, sizeof(int) * (size_t)batch, cudaMemcpyDeviceToHost), "memcpy b1 info");
+  int overall = 0;
+  for (int s = 0; s < nsamples; s++) {
+    int sample_info = 0;
+    for (int qi = 0; qi < q; qi++) {
+      int b = s * q + qi;
+      if (h_info[b] != 0) { sample_info = h_info[b]; break; }
+      if (!isfinite(pfM[b])) { sample_info = qi + 1; break; }
+    }
+    g_b1_info_per_sample[s] = sample_info;
+    if (sample_info != 0 && overall == 0) overall = sample_info;
+  }
+  free(h_info);
+
+  *invM_batch_out = invM;
+  *pfM_batch_out = pfM;
+  *info_per_sample_out = g_b1_info_per_sample;
+  return overall;
+}

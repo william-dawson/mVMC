@@ -111,6 +111,22 @@ void VMCMainCal(MPI_Comm comm) {
   StartTimer(24);
   clearPhysQuantity();
   StopTimer(24);
+#ifdef USE_GPU_PFAFFIAN
+  /* B1: batch-factorize every sample in this rank's chunk in one GPU
+   * call instead of one sample (Q-wide) at a time -- the loop below is
+   * otherwise unchanged; it just repoints InvM_real/PfM_real at this
+   * batch's per-sample slice instead of calling CalculateMAll_real fresh
+   * every sample. See HANDOFF.md / the mvmc-pfaffian-gpu-port skill. */
+  double *InvM_real_Moto = InvM_real;
+  double *PfM_real_Moto  = PfM_real;
+  double *b1_invM_batch = NULL, *b1_pfM_batch = NULL;
+  int *b1_info_batch = NULL;
+  if (AllComplexFlag==0 && sampleEnd>sampleStart) {
+    CalculateMAll_real_gpu_batch(EleIdx + sampleStart*Nsize, Nsize,
+                                  sampleEnd-sampleStart, qpEnd-qpStart,
+                                  &b1_invM_batch, &b1_pfM_batch, &b1_info_batch);
+  }
+#endif
   for(sample=sampleStart;sample<sampleEnd;sample++) {
 
     eleIdx = EleIdx + sample*Nsize;
@@ -122,6 +138,29 @@ void VMCMainCal(MPI_Comm comm) {
     StartTimer(40);
 #ifdef _DEBUG_VMCCAL
     printf("  Debug: sample=%d: CalculateMAll \n",sample);
+#endif
+#ifdef USE_GPU_PFAFFIAN
+    if(AllComplexFlag==0 && b1_invM_batch!=NULL){
+      const int localSample = sample - sampleStart;
+      const int q = qpEnd - qpStart;
+      InvM_real = b1_invM_batch + (size_t)localSample*q*Nsize*Nsize;
+      PfM_real  = b1_pfM_batch  + (size_t)localSample*q;
+      info = b1_info_batch[localSample];
+      /* InvM's own allocation holds Q matrices then Q Pfaffian values
+       * contiguously (PfM = InvM + Q*Nsize*Nsize, set up once in
+       * setmemory.c), which the original single-loop copy below relied
+       * on implicitly. The batch buffers here are NOT contiguous with
+       * each other that way, so copy the two pieces explicitly instead
+       * -- same net effect (InvM stays in sync with InvM_real/PfM_real
+       * every sample, needed by SlaterElmDiff_fcmp and, when
+       * FlagOptTrans>0, calculateOptTransDiff's use of the global PfM),
+       * just not relying on a contiguity assumption that no longer
+       * holds for the batch case. */
+#pragma omp parallel for default(shared) private(tmp_i)
+      for(tmp_i=0;tmp_i<NQPFull*Nsize*Nsize;tmp_i++)  InvM[tmp_i]= InvM_real[tmp_i];
+#pragma omp parallel for default(shared) private(tmp_i)
+      for(tmp_i=0;tmp_i<NQPFull;tmp_i++)  InvM[NQPFull*Nsize*Nsize+tmp_i] = PfM_real[tmp_i];
+    }else
 #endif
     if(AllComplexFlag==0){
       info = CalculateMAll_real(eleIdx,qpStart,qpEnd); // InvM_real,PfM_real will change
@@ -313,6 +352,11 @@ void VMCMainCal(MPI_Comm comm) {
       }
     }
   } /* end of for(sample) */
+
+#ifdef USE_GPU_PFAFFIAN
+  InvM_real = InvM_real_Moto;
+  PfM_real  = PfM_real_Moto;
+#endif
 
 // calculate OO and HO at NVMCCalMode==0
   if(NVMCCalMode==0){
