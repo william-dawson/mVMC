@@ -154,6 +154,38 @@ add_subdirectory("${STDFACE_DIR}")
 enable_language(CXX)
 set(CMAKE_CXX_STANDARD 11)
 
+# GPU Pfaffian kernels (B1 CalculateMAll, A3 recal PfM/InvM) -- see
+# HANDOFF.md / mvmc-pfaffian-gpu-port skill. Detected the standard CMake
+# way: find_package(CUDAToolkit) succeeds whenever nvcc is discoverable
+# (e.g. after `module load nvhpc` on Rikyu), no project-specific flag
+# needed. To force this off on a machine that has the toolkit installed
+# but no working GPU, use CMake's own standard override --
+#   -DCMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit=ON
+# -- rather than a bespoke USE_GPU_PFAFFIAN switch.
+find_package(CUDAToolkit)
+if(CUDAToolkit_FOUND)
+  # CUDA's own compiler-identification test-compile links with whatever
+  # host compiler CMAKE_CUDA_HOST_COMPILER names; leaving it to pick its
+  # own default resolves to plain g++ here, which then chokes on NVHPC's
+  # -mp already accumulated in CMAKE_EXE_LINKER_FLAGS from the C/CXX
+  # OpenMP setup above (g++: error: unrecognized command-line option
+  # '-mp'). Match it to whatever already compiled the rest of the code
+  # instead (nvc++ on an NVHPC build, g++ on a GCC build) -- this also
+  # preserves a real user override via -DCMAKE_CUDA_HOST_COMPILER=....
+  if(NOT CMAKE_CUDA_HOST_COMPILER)
+    set(CMAKE_CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}" CACHE FILEPATH "Host compiler for CUDA compilation" FORCE)
+  endif()
+  enable_language(CUDA)
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    # sm_100 = GB200/B200 (Rikyu). Override with -DCMAKE_CUDA_ARCHITECTURES=... elsewhere.
+    set(CMAKE_CUDA_ARCHITECTURES 100)
+  endif()
+  set(CMAKE_CUDA_STANDARD 14)
+  set(USE_GPU_PFAFFIAN TRUE)
+else()
+  set(USE_GPU_PFAFFIAN FALSE)
+endif()
+
 if(Require_BLIS)
   include("download_blis_artifact.cmake")
 else(Require_BLIS)
@@ -179,5 +211,8 @@ add_subdirectory(src/ltl2inv)
   if(Require_BLIS)
     add_dependencies(ltl2inv blis_include)
   endif(Require_BLIS)
+if(USE_GPU_PFAFFIAN)
+  add_subdirectory(src/gpu_pfaffian)
+endif(USE_GPU_PFAFFIAN)
 add_subdirectory(src/mVMC)
 add_subdirectory(tool)

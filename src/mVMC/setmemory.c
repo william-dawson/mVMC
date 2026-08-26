@@ -30,6 +30,9 @@ along with this program. If not, see http://www.gnu.org/licenses/.
 #include <complex.h>
 #include "global.h"
 #include "setmemory.h"
+#ifdef USE_GPU_PFAFFIAN
+#include "gpu_managed_alloc.h"
+#endif
 
 #ifndef _SRC_SETMEMORY
 #define _SRC_SETMEMORY
@@ -334,7 +337,11 @@ void SetMemory() {
   OptTrans = Para + NProj + FlagRBM*NRBM + NProjBF + NSlater;
 
   /***** Electron Configuration ******/
+#ifdef USE_GPU_PFAFFIAN
+  EleIdx            = (int*)gpu_managed_alloc(sizeof(int)*( NVMCSample*2*Ne ));
+#else
   EleIdx            = (int*)malloc(sizeof(int)*( NVMCSample*2*Ne ));
+#endif
   EleCfg            = (int*)malloc(sizeof(int)*( NVMCSample*2*Nsite ));
   EleNum            = (int*)malloc(sizeof(int)*( NVMCSample*2*Nsite ));
   EleProjCnt        = (int*)malloc(sizeof(int)*( NVMCSample*NProj ));
@@ -392,8 +399,13 @@ void SetMemory() {
   PfM = InvM + NQPFull*Nsize*Nsize;
 // for real TBC
   if (AllComplexFlag == 0){
+#ifdef USE_GPU_PFAFFIAN
+    SlaterElm_real = (double*)gpu_managed_alloc(sizeof(double)*(NQPFull*(2*Nsite)*(2*Nsite)) );
+    InvM_real      = (double*)gpu_managed_alloc(sizeof(double)*(NQPFull*(Nsize*Nsize+1)) );
+#else
     SlaterElm_real = (double*)malloc(sizeof(double)*(NQPFull*(2*Nsite)*(2*Nsite)) );
     InvM_real      = (double*)malloc(sizeof(double)*(NQPFull*(Nsize*Nsize+1)) );
+#endif
     PfM_real       = InvM_real + NQPFull*Nsize*Nsize;
   }
 
@@ -538,15 +550,24 @@ void FreeMemory() {
   free(SlaterElm);
 
   if (AllComplexFlag == 0){
+#ifdef USE_GPU_PFAFFIAN
+    gpu_managed_free(InvM_real);
+    gpu_managed_free(SlaterElm_real);
+#else
     free(InvM_real);
     free(SlaterElm_real);
+#endif
   }
 
   free(BurnEleIdx);
   free(TmpEleIdx);
   free(logSqPfFullSlater);
   free(EleProjCnt);
+#ifdef USE_GPU_PFAFFIAN
+  gpu_managed_free(EleIdx);
+#else
   free(EleIdx);
+#endif
   free(EleNum);
   free(EleSpn);
   free(EleCfg);
