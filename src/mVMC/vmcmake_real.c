@@ -369,6 +369,14 @@ void VMCMakeSample_real(MPI_Comm comm) {
                              NBlockUpdateSize,
                              pfUpdator, pfOrbital);
         updated_tdi_v_get_pfa_d(NQPFull, PfM_real, pfUpdator);
+#elif defined(USE_GPU_PFAFFIAN)
+        // A3: GPU dispatch (mini-apps/mvmc-pfaffian-mini's validated
+        // kernels, wired in via CalculateMAll_real_gpu -- see HANDOFF.md
+        // and the mvmc-pfaffian-gpu-port skill). This call site is
+        // already Q=NQPFull=8 wide and one-shot, so no loop fission was
+        // needed to GPU-dispatch it (unlike B1 in vmccal.c, which still
+        // runs the CPU path).
+        CalculateMAll_real_gpu(TmpEleIdx, qpStart, qpEnd);
 #else
         CalculateMAll_real(TmpEleIdx, qpStart, qpEnd);
 #endif
