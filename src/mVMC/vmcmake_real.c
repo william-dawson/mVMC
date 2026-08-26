@@ -190,6 +190,12 @@ void VMCMakeSample_real(MPI_Comm comm) {
 #ifdef _pf_block_update
           // Inv already updated. Only need to get PfM again.
           updated_tdi_v_get_pfa_d(NQPFull, PfM_real, pfUpdator);
+#elif defined(USE_GPU_PFAFFIAN)
+          // A2: GPU dispatch (mini-apps/mvmc-updatem-mini's validated
+          // kernels, ported via UpdateMAll_real_gpu -- see HANDOFF.md
+          // and the mvmc-pfaffian-gpu-port skill). Fired on every
+          // accepted move, same Q=NQPFull-wide batch CPU already used.
+          UpdateMAll_real_gpu(mi, s, TmpEleIdx, qpStart, qpEnd);
 #else
           // UpdateMAll will change SlaterElm, InvM (including PfM)
           UpdateMAll_real(mi, s, TmpEleIdx, qpStart, qpEnd);
