@@ -167,6 +167,11 @@ void VMCMakeSample_real(MPI_Comm comm) {
 #ifdef _pf_block_update
         updated_tdi_v_push_d(NQPFull, rj+s*Nsite, mi+s*Ne, 1, pfUpdator);
         updated_tdi_v_get_pfa_d(NQPFull, pfMNew_real, pfUpdator);
+#elif defined(USE_GPU_PFAFFIAN)
+        // A1 on GPU: ported for residency, not FLOPs. As the last host-side
+        // reader of InvM_real in the trial loop it was forcing the whole
+        // array across NVLink-C2C every trial. See gpu_updateMAll.cu.
+        CalculateNewPfM2_real_gpu(mi, s, pfMNew_real, TmpEleIdx, qpStart, qpEnd);
 #else
         //CalculateNewPfM2(mi,s,pfMNew,TmpEleIdx,qpStart,qpEnd);
         CalculateNewPfM2_real(mi, s, pfMNew_real, TmpEleIdx, qpStart, qpEnd);
