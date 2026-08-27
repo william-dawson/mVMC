@@ -98,6 +98,8 @@ void VMCMakeSample_real(MPI_Comm comm) {
                        NBlockUpdateSize,
                        pfUpdator, pfOrbital);
   updated_tdi_v_get_pfa_d(NQPFull, PfM_real, pfUpdator);
+#elif defined(USE_GPU_PFAFFIAN)
+  CalculateMAll_real_gpu(TmpEleIdx, qpStart, qpEnd);
 #else
   CalculateMAll_real(TmpEleIdx, qpStart, qpEnd);
 #endif
@@ -483,7 +485,14 @@ int makeInitialSample_real(int *eleIdx, int *eleCfg, int *eleNum, int *eleProjCn
 
     MakeProjCnt(eleProjCnt, eleNum);
 
+#ifdef USE_GPU_PFAFFIAN
+    /* makeInitialSample retries until it finds a non-singular configuration;
+     * each retry is a full Q-wide factorization -- 2.10 s of a 10.44 s
+     * W=42/S=20 run (20%) on the CPU. Same drop-in as A3 uses. */
+    flag = CalculateMAll_real_gpu(eleIdx, qpStart, qpEnd);
+#else
     flag = CalculateMAll_real(eleIdx, qpStart, qpEnd);
+#endif
     //printf("DEBUG: maker4: PfM=%lf\n",creal(PfM[0]));
     if (size > 1) {
       MPI_Allreduce(&flag, &flagRdc, 1, MPI_INT, MPI_MAX, comm);

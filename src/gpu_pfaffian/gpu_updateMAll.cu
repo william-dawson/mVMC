@@ -276,6 +276,7 @@ __global__ void k_a1_ratio(int n, int ne, int nsite, int nsite2,
 }
 
 static double *g_a1_pfMNew = NULL;   /* device, q doubles */
+static double *g_a1_host = NULL;     /* PINNED host staging, q doubles */
 static int g_a1_q = -1;
 
 /* Drop-in GPU replacement for CalculateNewPfM2_real. pfMNew_real is a host
@@ -292,7 +293,15 @@ extern "C" void CalculateNewPfM2_real_gpu(int ma, int s, double *pfMNew_real,
 
   if (q != g_a1_q) {
     if (g_a1_pfMNew) cudaFree(g_a1_pfMNew);
+    if (g_a1_host) cudaFreeHost(g_a1_host);
     check_cuda(cudaMalloc(&g_a1_pfMNew, sizeof(double) * (size_t)q), "cudaMalloc a1 pfMNew");
+    /* Pinned staging. A D2H copy into pageable memory goes through a driver
+     * staging buffer and cannot DMA directly; measured overhead around this
+     * one 64-byte copy was ~21 us/trial against a 10 us kernel (ncu), i.e.
+     * the copy and launch cost more than twice the work. Pinned memory lets
+     * it DMA straight out. 52,920 trials/step at W=42/S=20, so every
+     * microsecond here is 53 ms of the run. */
+    check_cuda(cudaMallocHost(&g_a1_host, sizeof(double) * (size_t)q), "cudaMallocHost a1");
     g_a1_q = q;
   }
 
@@ -300,8 +309,9 @@ extern "C" void CalculateNewPfM2_real_gpu(int ma, int s, double *pfMNew_real,
                             SlaterElm_real + (long)qpStart * nsite2 * nsite2,
                             InvM_real, PfM_real, eleIdx, msa, rsa, g_a1_pfMNew);
   check_cuda(cudaGetLastError(), "k_a1_ratio launch");
-  check_cuda(cudaMemcpy(pfMNew_real, g_a1_pfMNew, sizeof(double) * (size_t)q,
+  check_cuda(cudaMemcpy(g_a1_host, g_a1_pfMNew, sizeof(double) * (size_t)q,
                         cudaMemcpyDeviceToHost), "memcpy pfMNew");
+  memcpy(pfMNew_real, g_a1_host, sizeof(double) * (size_t)q);
 
   /* MVMC_A1_CHECK=1: recompute on the CPU and report the worst relative
    * difference seen so far. This exists because putting A1 on the GPU
