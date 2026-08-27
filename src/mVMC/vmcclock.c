@@ -76,6 +76,57 @@ void StopTimer(int n) {
   return;
 }
 
+/* Steady-state sampling throughput.
+ *
+ * Production mVMC runs hundreds of SR steps and thousands of samples, so the
+ * number that matters is the per-sample cost once the run is going -- not the
+ * wall time of a short benchmark, which is dominated by one-time setup.
+ *
+ * Two costs are one-time and must not be charged to sampling:
+ *   Timer[1]  Initialization -- ReadDefFile, SetMemory, InitParameter
+ *   Timer[30] makeInitialSample -- runs only while BurnFlag==0, i.e. once per
+ *             run, not once per SR step. On a GPU build this is also where the
+ *             CUDA context gets created, which is why it is ~1.9 s at any size
+ *             and was 20%% of a W=42/S=20 measurement while being 7%% of the
+ *             same run at S=100. Measuring at small S without removing it
+ *             understates the GPU badly.
+ *
+ * Everything else in Timer[0] scales with the sampling work, so
+ *   steady = Timer[0] - Timer[1] - Timer[30]
+ * is the cost of producing NVMCSample*NSROptItrStep samples on this rank.
+ * Both the steady-state and the naive all-inclusive rate are reported so the
+ * gap between them is visible rather than hidden. */
+void OutputThroughput() {
+  char fileName[D_FileNameMax];
+  FILE *fp;
+  double one_time, steady, nsamp;
+
+  one_time = Timer[1] + Timer[30];
+  steady   = Timer[0] - one_time;
+  nsamp    = (double)NVMCSample * (double)NSROptItrStep;
+  if (steady <= 0.0) steady = -1.0;   /* guard: unmeasurable, report as such */
+
+  sprintf(fileName, "%s_throughput.dat", CDataFileHead);
+  fp = fopen(fileName, "w");
+  if (fp == NULL) return;
+  fprintf(fp, "NVMCSample            %d\n", NVMCSample);
+  fprintf(fp, "NSROptItrStep         %d\n", NSROptItrStep);
+  fprintf(fp, "samples_this_rank     %.0f\n", nsamp);
+  fprintf(fp, "wall_total_s          %.5f\n", Timer[0]);
+  fprintf(fp, "one_time_s            %.5f\n", one_time);
+  fprintf(fp, "  initialization_s    %.5f\n", Timer[1]);
+  fprintf(fp, "  makeInitialSample_s %.5f\n", Timer[30]);
+  fprintf(fp, "steady_sampling_s     %.5f\n", steady);
+  if (steady > 0.0) {
+    fprintf(fp, "steady_samples_per_s  %.5f\n", nsamp / steady);
+    fprintf(fp, "steady_s_per_SRstep   %.5f\n", steady / (double)NSROptItrStep);
+  }
+  fprintf(fp, "naive_samples_per_s   %.5f\n", nsamp / Timer[0]);
+  fprintf(fp, "one_time_frac         %.4f\n", one_time / Timer[0]);
+  fclose(fp);
+  return;
+}
+
 void OutputTimerParaOpt() {
   char fileName[D_FileNameMax];
   FILE *fp;

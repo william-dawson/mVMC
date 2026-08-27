@@ -310,6 +310,7 @@ int main(int argc, char* argv[])
   if(rank0==0) {
     if(NVMCCalMode==0) {
       OutputTimerParaOpt();
+      OutputThroughput();
     } else if(NVMCCalMode==1) {
       OutputTimerPhysCal();
     } 
