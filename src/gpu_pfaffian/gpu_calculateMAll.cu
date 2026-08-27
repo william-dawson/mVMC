@@ -279,7 +279,12 @@ static void gpu_pfaffian_b1_free_buffers() {
 }
 
 static void gpu_pfaffian_b1_ensure_buffers(int n, int nb, int batch, int nsamples) {
-  if (n == g_b1_buf_n && nb == g_b1_buf_nb && batch == g_b1_buf_batch && nsamples == g_b1_nsamples_alloc) return;
+  /* Grow-only. The last chunk of a run is usually shorter than the rest, and
+   * reallocating tens of GB for it costs far more than the memory it saves. */
+  if (n == g_b1_buf_n && nb == g_b1_buf_nb &&
+      batch <= g_b1_buf_batch && nsamples <= g_b1_nsamples_alloc) return;
+  if (batch < g_b1_buf_batch) batch = g_b1_buf_batch;
+  if (nsamples < g_b1_nsamples_alloc) nsamples = g_b1_nsamples_alloc;
   gpu_pfaffian_b1_free_buffers();
   check_cuda(cudaMalloc(&g_b1_ipiv, sizeof(int) * (size_t)n * batch), "cudaMalloc b1 ipiv");
   check_cuda(cudaMalloc(&g_b1_info, sizeof(int) * (size_t)batch), "cudaMalloc b1 info");
@@ -326,6 +331,55 @@ static void gpu_pfaffian_b1_ensure_buffers(int n, int nb, int batch, int nsample
  * unchanged. Return value is the first nonzero per-sample status found
  * (0 if every sample succeeded), for convenience/logging only -- the
  * per-sample array is what callers should actually branch on. */
+/* Largest sample-chunk that fits in free device memory.
+ *
+ * The batch buffers below are ~5 arrays of (chunk*q)*n^2*8 bytes plus the
+ * dsktrf panel workspace, so the footprint grows LINEARLY IN S. Unchunked
+ * that is 249 GB at W=42/S=250 against a 189 GB device -- i.e. production
+ * simply does not run. It is also what caps the walker count long before
+ * bandwidth does: measured at S=100, W=42 fits 1.9 walkers, W=34 fits 4.4,
+ * and two runs of the walker scan died with exactly this.
+ *
+ * Ask the driver rather than assuming: other walkers under MPS, the resident
+ * per-walker state (InvM ~199 MB + SlaterElm ~796 MB at W=42) and the A3
+ * buffers all take their share first. Keep 40% of free memory in reserve --
+ * cudaMemGetInfo is a snapshot and concurrent MPS clients move it. */
+extern "C" int CalculateMAll_real_gpu_max_chunk(int q) {
+  const long n = Nsize;
+  int nb = (int)((n / 2 < 32) ? (n / 2) : 32);
+  if (nb < 1) nb = 1;
+  size_t freeB = 0, totalB = 0;
+  if (cudaMemGetInfo(&freeB, &totalB) != cudaSuccess) return 1;
+  /* per sample: q matrices, ~5 of size n^2, plus panel w and ipiv */
+  double per_sample = (double)q * (40.0 * (double)n * (double)n
+                                   + 16.0 * (double)n * (double)nb
+                                   + 4.0 * (double)n + 8.0);
+  double usable = 0.60 * (double)freeB;
+  long chunk = (long)(usable / per_sample);
+  if (chunk < 1) chunk = 1;
+
+  /* Cap well below what memory allows, because chunk size and walker count
+   * compete for the same device memory and walkers win.
+   *
+   * For ONE walker, bigger chunks are monotonically better (W=42, S=250,
+   * steady samples/s): chunk 8 -> 3.59, 16 -> 3.82, 32 -> 3.93, 64 -> 4.00,
+   * 128 -> 4.04. So a single-walker run does want the memory-derived value.
+   *
+   * But at FIXED total memory (~127 GB), spending it on walkers instead of
+   * chunk is far better: 1w x 128 -> 4.06, 2w x 64 -> 5.84, 4w x 32 -> 7.42,
+   * 8w x 16 -> 7.81. Concurrency is worth 1.93x where the chunk was worth
+   * 1.13x, and it plateaus around 4-8 walkers. A cap of 32 costs ~3% on a
+   * single walker and buys room for four, so it is the better default.
+   *
+   * MVMC_B1_CHUNK overrides it -- raise it for a deliberately single-walker
+   * run, lower it to pack in more walkers. */
+  const char *env = getenv("MVMC_B1_CHUNK");
+  long cap = env ? atol(env) : 32;
+  if (cap < 1) cap = 1;
+  if (chunk > cap) chunk = cap;
+  return (int)chunk;
+}
+
 extern "C" int CalculateMAll_real_gpu_batch(const int *eleIdxBase, int sampleStride,
                                              int nsamples, int q,
                                              double **invM_batch_out, double **pfM_batch_out,

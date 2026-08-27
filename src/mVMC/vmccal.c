@@ -121,10 +121,14 @@ void VMCMainCal(MPI_Comm comm) {
   double *PfM_real_Moto  = PfM_real;
   double *b1_invM_batch = NULL, *b1_pfM_batch = NULL;
   int *b1_info_batch = NULL;
+  int b1_chunk = 0, b1_base = 0, b1_next = sampleStart;
   if (AllComplexFlag==0 && sampleEnd>sampleStart) {
-    CalculateMAll_real_gpu_batch(EleIdx + sampleStart*Nsize, Nsize,
-                                  sampleEnd-sampleStart, qpEnd-qpStart,
-                                  &b1_invM_batch, &b1_pfM_batch, &b1_info_batch);
+    /* B1 is chunked because its batch buffers scale linearly in S: unchunked
+     * they need 249 GB at W=42/S=250 on a 189 GB device. Chunk size comes from
+     * free device memory at runtime, not a constant, because concurrent MPS
+     * walkers and the resident per-walker state take their share first. */
+    b1_chunk = CalculateMAll_real_gpu_max_chunk(qpEnd-qpStart);
+    if (b1_chunk > sampleEnd-sampleStart) b1_chunk = sampleEnd-sampleStart;
   }
 #endif
   for(sample=sampleStart;sample<sampleEnd;sample++) {
@@ -140,8 +144,20 @@ void VMCMainCal(MPI_Comm comm) {
     printf("  Debug: sample=%d: CalculateMAll \n",sample);
 #endif
 #ifdef USE_GPU_PFAFFIAN
+    /* Factorize the next chunk on reaching its first sample. The consumption
+     * loop below is unchanged -- it just indexes relative to the current
+     * chunk instead of to sampleStart. */
+    if(AllComplexFlag==0 && b1_chunk>0 && sample==b1_next){
+      int this_chunk = sampleEnd - sample;
+      if (this_chunk > b1_chunk) this_chunk = b1_chunk;
+      b1_base = sample;
+      b1_next = sample + this_chunk;
+      CalculateMAll_real_gpu_batch(EleIdx + (size_t)b1_base*Nsize, Nsize,
+                                    this_chunk, qpEnd-qpStart,
+                                    &b1_invM_batch, &b1_pfM_batch, &b1_info_batch);
+    }
     if(AllComplexFlag==0 && b1_invM_batch!=NULL){
-      const int localSample = sample - sampleStart;
+      const int localSample = sample - b1_base;
       const int q = qpEnd - qpStart;
       InvM_real = b1_invM_batch + (size_t)localSample*q*Nsize*Nsize;
       PfM_real  = b1_pfM_batch  + (size_t)localSample*q;

@@ -8,6 +8,7 @@ int CalculateMAll_real_gpu(const int *eleIdx, const int qpStart, const int qpEnd
 int CalculateMAll_real_gpu_batch(const int *eleIdxBase, int sampleStride,
     int nsamples, int q,
     double **invM_batch_out, double **pfM_batch_out, int **info_per_sample_out);
+int CalculateMAll_real_gpu_max_chunk(int q);
 #endif
 
 int CalculateMAll_BF_real(const int *eleIdx, const int qpStart, const int qpEnd);
