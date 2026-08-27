@@ -253,6 +253,18 @@ int main(int argc, char* argv[])
   StopTimer(10);
 #endif
 
+  if(rank0==0) {
+    long totalWalkerSamples = (long)NVMCSample * (long)size2;
+    fprintf(stdout,"Independent walkers (MPI ranks / NSplitSize) = %d, total effective VMC samples = %ld x %d = %ld\n",
+            size2, (long)NVMCSample, size2, totalWalkerSamples);
+    FILE *fpWalkerCheck = fopen("zvo_walkercheck.dat", "w");
+    if(fpWalkerCheck != NULL) {
+      fprintf(fpWalkerCheck, "NVMCSample %ld\nMPI_ranks %d\nNSplitSize %d\nIndependentWalkers %d\nTotalEffectiveSamples %ld\n",
+              (long)NVMCSample, size0, NSplitSize, size2, totalWalkerSamples);
+      fclose(fpWalkerCheck);
+    }
+  }
+
   /* initialize Mersenne Twister */
   init_gen_rand(RndSeed+group1);
   /* get the size of work space for LAPACK and PFAPACK */
