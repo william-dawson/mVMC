@@ -177,8 +177,8 @@ if(CUDAToolkit_FOUND)
   endif()
   enable_language(CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    # sm_100 = GB200/B200 (Rikyu). Override with -DCMAKE_CUDA_ARCHITECTURES=... elsewhere.
-    set(CMAKE_CUDA_ARCHITECTURES 100)
+    # sm_90 = Hopper, sm_100 = Blackwell. Override with -DCMAKE_CUDA_ARCHITECTURES=... elsewhere.
+    set(CMAKE_CUDA_ARCHITECTURES 90 100)
   endif()
   set(CMAKE_CUDA_STANDARD 14)
   set(USE_GPU_PFAFFIAN TRUE)
